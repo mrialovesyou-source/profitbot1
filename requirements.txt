@@ -1,0 +1,11 @@
+pyTelegramBotAPI
+Flask
+pandas
+numpy
+matplotlib
+seaborn
+scikit-learn
+statsmodels
+openpyxl
+reportlab
+requests
