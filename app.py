@@ -57,8 +57,9 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 # Flask приложение для Render
 flask_app = Flask(__name__)
 
-@flask_app.route('/')
+@flask_app.route('/', methods=['GET', 'HEAD'])
 def health():
+    """Health check endpoint для Render и UptimeRobot"""
     return "ProfitBot is running!", 200
 
 @flask_app.route('/health')
