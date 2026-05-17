@@ -997,13 +997,24 @@ def webhook():
 
 # ==================== ЗАПУСК ====================
 if __name__ == "__main__":
-    # Устанавливаем webhook вместо polling
-    webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_URL', 'profitbot1.onrender.com')}/webhook"
-    bot.remove_webhook()
-    time.sleep(1)
-    bot.set_webhook(url=webhook_url)
-    print(f"✅ Webhook установлен: {webhook_url}")
+    # Получаем внешний URL из переменной окружения Render
+    render_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://profitbot1.onrender.com')
+    if render_url.startswith('http://') or render_url.startswith('https://'):
+        webhook_url = f"{render_url}/webhook"
+    else:
+        webhook_url = f"https://{render_url}/webhook"
     
-    # Запускаем Flask
+    # Удаляем предыдущий webhook и устанавливаем новый
+    bot.delete_webhook()  # лучше delete, чем remove
+    time.sleep(1)
+    
+    # Устанавливаем webhook с ограничением на типы обновлений (оптимизация)
+    result = bot.set_webhook(url=webhook_url, allowed_updates=['message', 'callback_query'])
+    if result:
+        print(f"✅ Webhook успешно установлен на: {webhook_url}")
+    else:
+        print(f"❌ Ошибка при установке webhook на: {webhook_url}")
+    
+    # Запускаем Flask-сервер
     port = int(os.environ.get("PORT", 5000))
     flask_app.run(host="0.0.0.0", port=port)
