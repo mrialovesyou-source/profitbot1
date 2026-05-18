@@ -163,7 +163,7 @@ class AIAnalyzer:
 
     def detect_fraud(self, z_threshold=3.0):
         if len(self.df) < 5:
-            return pd.DataFrame(), None, "Недостаточно данных"
+            return pd.DataFrame(), None, "Недостаточно данных (минимум 5 дней)"
         iso_forest = IsolationForest(contamination=0.1, random_state=42)
         features = self.df[['Расходы']].copy()
         features['day_index'] = np.arange(len(features))
@@ -178,10 +178,11 @@ class AIAnalyzer:
             return pd.DataFrame(), None, "Аномалий не обнаружено"
         fraud_df = self.df[combined][['Дата', 'Расходы']].copy()
         fraud_df.columns = ['Дата', 'Сумма']
+        # График с красными точками
         fig, ax = plt.subplots(figsize=(10,5))
-        ax.scatter(self.df['Дата'], self.df['Расходы'], alpha=0.5, label='Норма')
-        ax.scatter(fraud_df['Дата'], fraud_df['Сумма'], color='red', s=80, label='Аномалии')
-        ax.set_title('Аномалии в расходах')
+        ax.scatter(self.df['Дата'], self.df['Расходы'], alpha=0.5, label='Нормальные расходы')
+        ax.scatter(fraud_df['Дата'], fraud_df['Сумма'], color='red', s=100, label='Аномалии', zorder=5)
+        ax.set_title('Аномалии в расходах (красные точки – подозрительные операции)')
         ax.set_xlabel('Дата')
         ax.set_ylabel('Сумма, руб')
         ax.legend()
@@ -595,7 +596,7 @@ def generate_pdf_report(metrics, df, charts):
     shutil.rmtree(temp_dir)
     return pdf_bytes
 
-def generate_excel_report(df, metrics, manual_mode=False):
+def generate_excel_report(df, metrics, manual_mode=False, ai_fraud_table=None):
     output = BytesIO()
     df_copy = df.copy()
     if 'Дата' in df_copy.columns:
@@ -618,6 +619,11 @@ def generate_excel_report(df, metrics, manual_mode=False):
             'Вывод': [metrics['roi_comment'], metrics['margin_comment'], metrics['be_comment'], metrics['reinvest_comment']]
         })
         insights.to_excel(writer, sheet_name='Аналитика', index=False)
+        # Лист аномалий
+        if ai_fraud_table is not None and not ai_fraud_table.empty:
+            ai_fraud_table.to_excel(writer, sheet_name='Аномалии расходов', index=False)
+        else:
+            pd.DataFrame({'Сообщение': ['Аномалий не обнаружено']}).to_excel(writer, sheet_name='Аномалии расходов', index=False)
         for sheet_name in writer.sheets:
             worksheet = writer.sheets[sheet_name]
             for column in worksheet.columns:
@@ -789,7 +795,6 @@ def handle_text(message):
         expenses = td['expenses']
         debt = td['debt']
         
-        # 📥 Статус 1: данные приняты
         status = bot.send_message(user_id, "📥 Данные приняты, обрабатываю...")
         
         daily_rev = revenue / days
@@ -799,11 +804,9 @@ def handle_text(message):
         df_manual = pd.DataFrame({'Дата': dates, 'Выручка': [daily_rev]*days, 'Расходы': [daily_exp]*days})
         user["last_df"] = df_manual
         
-        # 📊 Статус 2: расчёт метрик
         bot.edit_message_text("📊 Рассчитываю метрики...", user_id, status.message_id)
         metrics = calculate_metrics(df_manual)
         
-        # 🔮 AI прогноз
         analyzer = AIAnalyzer(df_manual)
         fig_gap, conclusion = analyzer.predict_cash_gap()
         if fig_gap:
@@ -812,14 +815,22 @@ def handle_text(message):
                 bot.send_photo(user_id, photo, caption=f"🔮 {conclusion}")
             os.remove('cash_gap.png')
         
-        # 📄 Статус 3: генерация
+        # Аномалии
+        fraud_df, fig_fraud, conclusion_fraud = analyzer.detect_fraud()
+        if fig_fraud:
+            fig_fraud.savefig('fraud.png')
+            with open('fraud.png', 'rb') as photo:
+                bot.send_photo(user_id, photo, caption=f"⚠️ {conclusion_fraud}")
+            os.remove('fraud.png')
+        else:
+            bot.send_message(user_id, f"✅ {conclusion_fraud}")
+        
         bot.edit_message_text("📄 Генерирую PDF и Excel...", user_id, status.message_id)
         send_brief_summary(user_id, metrics)
         charts, charts_dir = create_charts(df_manual, metrics)
         pdf_bytes = generate_pdf_report(metrics, df_manual, charts)
-        excel_bytes = generate_excel_report(df_manual, metrics, manual_mode=True)
+        excel_bytes = generate_excel_report(df_manual, metrics, manual_mode=True, ai_fraud_table=fraud_df)
         
-        # 📤 Статус 4: отправка
         bot.edit_message_text("📤 Отправляю готовые файлы...", user_id, status.message_id)
         bot.send_document(user_id, excel_bytes, visible_file_name="отчёт_ProfitBot.xlsx")
         time.sleep(1)
@@ -829,8 +840,6 @@ def handle_text(message):
         if not is_admin(user_id):
             user["free_used"] = True
         set_state(user_id, STATES["MAIN_MENU"])
-        
-        # ✅ Статус 5: готово
         bot.edit_message_text("✅ Готово! Отчёт сформирован.", user_id, status.message_id)
         bot.send_message(user_id, "✅ Отчёт готов. Вернуться в меню: /start", reply_markup=main_menu_keyboard())
         
@@ -873,18 +882,14 @@ def handle_excel(message):
         bot.send_message(user_id, "❌ Пожалуйста, загрузите файл в формате .xlsx или .xls")
         return
     
-    # 📥 Шаг 1: принял запрос
     status = bot.send_message(user_id, "📥 Принял файл, проверяю...")
     
     try:
-        # 📖 Шаг 2: чтение
         bot.edit_message_text("📖 Читаю данные из Excel...", user_id, status.message_id)
-        
         file_info = bot.get_file(message.document.file_id)
         downloaded = bot.download_file(file_info.file_path)
         df = pd.read_excel(BytesIO(downloaded), engine='openpyxl')
         
-        # 🔧 Приводим названия колонок
         rename_dict = {}
         for col in df.columns:
             col_low = str(col).strip().lower()
@@ -897,12 +902,10 @@ def handle_excel(message):
         if rename_dict:
             df = df.rename(columns=rename_dict)
         
-        # ❌ Проверка
         if 'Дата' not in df.columns or 'Выручка' not in df.columns or 'Расходы' not in df.columns:
             bot.edit_message_text("❌ Ошибка: нужны колонки 'Дата', 'Выручка', 'Расходы'", user_id, status.message_id)
             return
         
-        # 🔄 Шаг 3: обработка
         bot.edit_message_text("🔄 Обрабатываю даты и числа...", user_id, status.message_id)
         df['Дата'] = pd.to_datetime(df['Дата'], dayfirst=True, errors='coerce')
         df['Выручка'] = pd.to_numeric(df['Выручка'], errors='coerce')
@@ -916,11 +919,9 @@ def handle_excel(message):
         user["last_df"] = df
         bot.edit_message_text(f"✅ Файл загружен! {len(df)} строк.", user_id, status.message_id)
         
-        # 📊 Шаг 4: расчёты
         bot.send_message(user_id, "📊 Считаю метрики и строю графики...")
         metrics = calculate_metrics(df)
         
-        # 🔮 AI прогноз
         analyzer = AIAnalyzer(df)
         fig_gap, conclusion = analyzer.predict_cash_gap()
         if fig_gap:
@@ -929,14 +930,22 @@ def handle_excel(message):
                 bot.send_photo(user_id, photo, caption=f"🔮 {conclusion}")
             os.remove('cash_gap.png')
         
-        # 📄 Шаг 5: генерация
+        # Аномалии
+        fraud_df, fig_fraud, conclusion_fraud = analyzer.detect_fraud()
+        if fig_fraud:
+            fig_fraud.savefig('fraud.png')
+            with open('fraud.png', 'rb') as photo:
+                bot.send_photo(user_id, photo, caption=f"⚠️ {conclusion_fraud}")
+            os.remove('fraud.png')
+        else:
+            bot.send_message(user_id, f"✅ {conclusion_fraud}")
+        
         bot.send_message(user_id, "📄 Генерирую PDF и Excel...")
         send_brief_summary(user_id, metrics)
         charts, charts_dir = create_charts(df, metrics)
         pdf_bytes = generate_pdf_report(metrics, df, charts)
-        excel_bytes = generate_excel_report(df, metrics)
+        excel_bytes = generate_excel_report(df, metrics, manual_mode=False, ai_fraud_table=fraud_df)
         
-        # 📤 Шаг 6: отправка
         bot.send_message(user_id, "📤 Отправляю готовые файлы...")
         bot.send_document(user_id, excel_bytes, visible_file_name="отчёт_ProfitBot.xlsx")
         time.sleep(1)
@@ -951,7 +960,6 @@ def handle_excel(message):
                 user["paid"] = False
         
         set_state(user_id, STATES["MAIN_MENU"])
-        # ✅ Готово
         bot.send_message(user_id, "✅ Готово! Отчёт сформирован. /start — меню", reply_markup=main_menu_keyboard())
         
     except Exception as e:
@@ -1051,24 +1059,19 @@ def webhook():
 
 # ==================== ЗАПУСК ====================
 if __name__ == "__main__":
-    # Получаем внешний URL из переменной окружения Render
     render_url = os.environ.get('RENDER_EXTERNAL_URL', 'https://profitbot1.onrender.com')
     if render_url.startswith('http://') or render_url.startswith('https://'):
         webhook_url = f"{render_url}/webhook"
     else:
         webhook_url = f"https://{render_url}/webhook"
     
-    # Удаляем предыдущий webhook и устанавливаем новый
     bot.delete_webhook()
     time.sleep(1)
-    
-    # Устанавливаем webhook с ограничением на типы обновлений (оптимизация)
     result = bot.set_webhook(url=webhook_url, allowed_updates=['message', 'callback_query'])
     if result:
         print(f"✅ Webhook успешно установлен на: {webhook_url}")
     else:
         print(f"❌ Ошибка при установке webhook на: {webhook_url}")
     
-    # Запускаем Flask-сервер
     port = int(os.environ.get("PORT", 5000))
     flask_app.run(host="0.0.0.0", port=port)
