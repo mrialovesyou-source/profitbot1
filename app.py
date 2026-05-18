@@ -33,7 +33,7 @@ if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN не задан в переменных окружения")
 
 ADMIN_IDS = [int(x.strip()) for x in os.environ.get('ADMIN_IDS', '1812619337').split(',')]
-PAYMENT_LINK = os.environ.get('PAYMENT_LINK', 'https://www.sberbank.ru/')
+PAYMENT_LINK = os.environ.get('PAYMENT_LINK', 'https://www.sberbank.ru/ru/choise_bank?requisiteNumber=79081868939&bankCode=100000000111')
 
 # ==================== СОСТОЯНИЯ ====================
 STATES = {
