@@ -1,4 +1,4 @@
-# app.py — финальная версия для Render (webhook, всё включено)
+# app.py — финальная версия для Render 
 
 import telebot
 import pandas as pd
@@ -781,20 +781,29 @@ def handle_text(message):
             set_state(user_id, STATES["MANUAL_CONFIRM"])
         except:
             bot.send_message(user_id, "❌ Введите число (можно использовать пробелы или запятые).", reply_markup=back_button())
+
     elif state == STATES["MANUAL_CONFIRM"] and text == "✅ Подтвердить":
         td = user["temp_data"]
         days = td['days']
         revenue = td['revenue']
         expenses = td['expenses']
         debt = td['debt']
+        
+        # 📥 Статус 1: данные приняты
+        status = bot.send_message(user_id, "📥 Данные приняты, обрабатываю...")
+        
         daily_rev = revenue / days
         daily_exp = expenses / days
         start_date = datetime.now() - timedelta(days=days-1)
         dates = [start_date + timedelta(days=i) for i in range(days)]
         df_manual = pd.DataFrame({'Дата': dates, 'Выручка': [daily_rev]*days, 'Расходы': [daily_exp]*days})
         user["last_df"] = df_manual
-        bot.send_message(user_id, "⏳ Генерирую отчёт...")
+        
+        # 📊 Статус 2: расчёт метрик
+        bot.edit_message_text("📊 Рассчитываю метрики...", user_id, status.message_id)
         metrics = calculate_metrics(df_manual)
+        
+        # 🔮 AI прогноз
         analyzer = AIAnalyzer(df_manual)
         fig_gap, conclusion = analyzer.predict_cash_gap()
         if fig_gap:
@@ -802,18 +811,29 @@ def handle_text(message):
             with open('cash_gap.png', 'rb') as photo:
                 bot.send_photo(user_id, photo, caption=f"🔮 {conclusion}")
             os.remove('cash_gap.png')
+        
+        # 📄 Статус 3: генерация
+        bot.edit_message_text("📄 Генерирую PDF и Excel...", user_id, status.message_id)
         send_brief_summary(user_id, metrics)
         charts, charts_dir = create_charts(df_manual, metrics)
         pdf_bytes = generate_pdf_report(metrics, df_manual, charts)
         excel_bytes = generate_excel_report(df_manual, metrics, manual_mode=True)
+        
+        # 📤 Статус 4: отправка
+        bot.edit_message_text("📤 Отправляю готовые файлы...", user_id, status.message_id)
         bot.send_document(user_id, excel_bytes, visible_file_name="отчёт_ProfitBot.xlsx")
         time.sleep(1)
         bot.send_document(user_id, pdf_bytes, visible_file_name="отчёт_ProfitBot.pdf")
+        
         shutil.rmtree(charts_dir)
         if not is_admin(user_id):
             user["free_used"] = True
         set_state(user_id, STATES["MAIN_MENU"])
+        
+        # ✅ Статус 5: готово
+        bot.edit_message_text("✅ Готово! Отчёт сформирован.", user_id, status.message_id)
         bot.send_message(user_id, "✅ Отчёт готов. Вернуться в меню: /start", reply_markup=main_menu_keyboard())
+        
     elif state == STATES["MANUAL_CONFIRM"] and text == "✏️ Заново":
         user["temp_data"] = {}
         set_state(user_id, STATES["MANUAL_DAYS"])
@@ -837,23 +857,34 @@ def handle_text(message):
 def handle_excel(message):
     user_id = message.chat.id
     user = get_user(user_id)
+    
     if user["state"] != STATES["AWAITING_EXCEL"]:
         bot.send_message(user_id, "❌ Сначала нажмите кнопку «📥 Загрузить Excel» в меню.")
         return
+    
     can, msg = can_generate_report(user_id, user)
     if not can:
         bot.send_message(user_id, msg)
         set_state(user_id, STATES["MAIN_MENU"])
         return
+    
     file_name = message.document.file_name
     if not (file_name.endswith('.xlsx') or file_name.endswith('.xls')):
         bot.send_message(user_id, "❌ Пожалуйста, загрузите файл в формате .xlsx или .xls")
         return
+    
+    # 📥 Шаг 1: принял запрос
+    status = bot.send_message(user_id, "📥 Принял файл, проверяю...")
+    
     try:
-        bot.send_message(user_id, "⏳ Обрабатываю файл...")
+        # 📖 Шаг 2: чтение
+        bot.edit_message_text("📖 Читаю данные из Excel...", user_id, status.message_id)
+        
         file_info = bot.get_file(message.document.file_id)
         downloaded = bot.download_file(file_info.file_path)
         df = pd.read_excel(BytesIO(downloaded), engine='openpyxl')
+        
+        # 🔧 Приводим названия колонок
         rename_dict = {}
         for col in df.columns:
             col_low = str(col).strip().lower()
@@ -865,19 +896,31 @@ def handle_excel(message):
                 rename_dict[col] = 'Расходы'
         if rename_dict:
             df = df.rename(columns=rename_dict)
+        
+        # ❌ Проверка
         if 'Дата' not in df.columns or 'Выручка' not in df.columns or 'Расходы' not in df.columns:
-            bot.send_message(user_id, "❌ Ошибка: нужны колонки 'Дата', 'Выручка', 'Расходы'")
+            bot.edit_message_text("❌ Ошибка: нужны колонки 'Дата', 'Выручка', 'Расходы'", user_id, status.message_id)
             return
+        
+        # 🔄 Шаг 3: обработка
+        bot.edit_message_text("🔄 Обрабатываю даты и числа...", user_id, status.message_id)
         df['Дата'] = pd.to_datetime(df['Дата'], dayfirst=True, errors='coerce')
         df['Выручка'] = pd.to_numeric(df['Выручка'], errors='coerce')
         df['Расходы'] = pd.to_numeric(df['Расходы'], errors='coerce')
         df = df.dropna(subset=['Дата', 'Выручка', 'Расходы'])
+        
         if df.empty:
-            bot.send_message(user_id, "❌ Нет валидных данных.")
+            bot.edit_message_text("❌ Нет валидных данных.", user_id, status.message_id)
             return
+        
         user["last_df"] = df
-        bot.send_message(user_id, f"✅ Файл загружен! {len(df)} строк с данными.")
+        bot.edit_message_text(f"✅ Файл загружен! {len(df)} строк.", user_id, status.message_id)
+        
+        # 📊 Шаг 4: расчёты
+        bot.send_message(user_id, "📊 Считаю метрики и строю графики...")
         metrics = calculate_metrics(df)
+        
+        # 🔮 AI прогноз
         analyzer = AIAnalyzer(df)
         fig_gap, conclusion = analyzer.predict_cash_gap()
         if fig_gap:
@@ -885,23 +928,34 @@ def handle_excel(message):
             with open('cash_gap.png', 'rb') as photo:
                 bot.send_photo(user_id, photo, caption=f"🔮 {conclusion}")
             os.remove('cash_gap.png')
+        
+        # 📄 Шаг 5: генерация
+        bot.send_message(user_id, "📄 Генерирую PDF и Excel...")
         send_brief_summary(user_id, metrics)
         charts, charts_dir = create_charts(df, metrics)
         pdf_bytes = generate_pdf_report(metrics, df, charts)
         excel_bytes = generate_excel_report(df, metrics)
+        
+        # 📤 Шаг 6: отправка
+        bot.send_message(user_id, "📤 Отправляю готовые файлы...")
         bot.send_document(user_id, excel_bytes, visible_file_name="отчёт_ProfitBot.xlsx")
         time.sleep(1)
         bot.send_document(user_id, pdf_bytes, visible_file_name="отчёт_ProfitBot.pdf")
+        
         shutil.rmtree(charts_dir)
+        
         if not is_admin(user_id):
             if not user["free_used"]:
                 user["free_used"] = True
             else:
                 user["paid"] = False
+        
         set_state(user_id, STATES["MAIN_MENU"])
-        bot.send_message(user_id, "✅ Отчёт готов. /start — меню", reply_markup=main_menu_keyboard())
+        # ✅ Готово
+        bot.send_message(user_id, "✅ Готово! Отчёт сформирован. /start — меню", reply_markup=main_menu_keyboard())
+        
     except Exception as e:
-        bot.send_message(user_id, f"❌ Ошибка: {str(e)[:150]}")
+        bot.edit_message_text(f"❌ Ошибка: {str(e)[:150]}", user_id, status.message_id)
         set_state(user_id, STATES["MAIN_MENU"])
 
 # ==================== ФОТО (ЧЕКИ) ====================
@@ -1005,7 +1059,7 @@ if __name__ == "__main__":
         webhook_url = f"https://{render_url}/webhook"
     
     # Удаляем предыдущий webhook и устанавливаем новый
-    bot.delete_webhook()  # лучше delete, чем remove
+    bot.delete_webhook()
     time.sleep(1)
     
     # Устанавливаем webhook с ограничением на типы обновлений (оптимизация)
